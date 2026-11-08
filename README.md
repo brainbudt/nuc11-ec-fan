@@ -2,7 +2,7 @@
 
 Experimental fan control for the **Intel NUC 11 Pro (NUC11TNH / Tiger Canyon)** on Linux. It reads and writes the embedded controller's (EC's) shared memory.
 
-> **Status: research.** Reading works. One write experiment succeeded: the EC applied a changed fan-record field without Intel's Windows driver (see [Results](#results)). Only that single field has been tested, on one machine. Do not use the write path unless you understand the risks below.
+> **Answer: yes.** On a NUC11TNHi7 with BIOS `TNTGL357.0064`, writing fan record 1's primary `min_duty` at EC address `0xFE410400+0x83` from Linux reproducibly raises and lowers the EC-reported fan RPM. This was tested against sham writes and at matched temperature readings, without any explicit driver notification. Strict dose dependence across 40–80 % was not confirmed; the apparent plateau near 2960 RPM is exploratory. See [Controlled sweep](#controlled-sweep). Only this one field has been tested, on one machine.
 
 ## Background
 
@@ -46,12 +46,49 @@ What this shows:
 
 Not tested: other fields and records, and whether a change survives a reboot. The expectation is that the EC reloads the BIOS profile at power-on, but that has not been tested.
 
+## Controlled sweep
+
+To rule out chance and confounders, `fan-sweep-test.sh` and `analyze-sweep.py` implement a pre-registered experiment. Script, settings, thresholds and verdict rules were frozen in commit `fb7d3ab` before the confirmatory run.
+
+- **Plan:** 14 steps in two sweeps, the second in reverse order: sham (the original value written over itself), 60, 40, 80, sham, 70, 45 %, then the same in reverse.
+- **Each step:** ≥ 60 s baseline at 50 %, a 12 s hold at the step value, restore, verify.
+- **Sampling:** 4 samples per second. Every sample checks that the byte holds its planned value; any mismatch, read error or CPU ≥ 65 °C aborts and restores.
+- **Temperature-matched delta:** RPM is compared only between baseline and hold samples with the *same* (CPU, EC source-4) temperature pair. These are both temperature sources of fan record 1, so a pure temperature response cannot pass.
+
+| Criterion | Confirmatory run (`results/run2-confirmatory.csv`) |
+| --- | --- |
+| C1 sham steps \|Δ\| < 80 RPM | PASS (−1, −52, +7, −4) |
+| C2 every active step in the right direction, \|Δ\| ≥ 120 RPM | PASS (10/10; −145 … +1240) |
+| C3 strictly monotonic within each sweep | **FAIL** (sweep 2: 40 % = −150, 45 % = −181) |
+| C4 ≥ 3 temperature-matched hold samples per step | PASS (11–20) |
+| C5 both sweeps agree per value (sign, ratio ≤ 2) | PASS |
+| C6 bytes as planned, restored, end RPM near baseline | PASS |
+| C7 complete plan, durations, no failures | PASS |
+
+Mean temperature-matched change versus the 50 % baseline:
+
+| min duty | 40 % | 45 % | 60 % | 70 % | 80 % |
+| --- | --- | --- | --- | --- | --- |
+| Sweep 1 | −183 | −145 | +457 | +817 | +1240 |
+| Sweep 2 | −150 | −181 | +458 | +851 | +1214 |
+
+The pre-registered overall verdict therefore fails on C3. The narrower conclusion at the top rests on C1, C2 and C4–C7, none of which were changed after seeing data. That conclusion was independently re-derived from the log by a second reviewer.
+
+**Exploratory, not confirmed:** at 40 % and 45 %, the hold RPM sat at 2957–2970 in every such step of both runs. This suggests a low-setting plateau near 2960 EC-reported RPM under these conditions, which would explain the C3 inversion. It does not establish a physical minimum or its mechanism.
+
+`results/run1-exploratory.csv` is an earlier run with a 30 s hold. It **failed** its own C4: the faster fan cooled source 4 by 1 °C after 9–18 s, which removed the temperature overlap. That run is kept for transparency and informed the 12 s hold.
+
+Limits: one machine and BIOS; EC-reported RPM, not a physical tachometer; integer temperature resolution; samples within a run are not independent replications.
+
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `ecmem.c` | Small static tool. `ecmem read` dumps the window via uncached `mmap` of `/dev/mem`. `ecmem write <off> <old> <new>` writes one byte, but only within fan record 1 (`0x80..0x8D`), only if the EC ID is `NUC_EC`, and only if the current value equals `<old>`. |
 | `nuc-fan.sh` | Prints RPM and decodes fan record 1 (read-only). |
+| `fan-sweep-test.sh` | Pre-registered controlled sweep (sham steps, five settings, two sweeps in opposite order); CSV output. |
+| `analyze-sweep.py` | Evaluates a sweep log against fixed criteria C1–C7 (temperature-matched). |
+| `results/` | Raw logs of the exploratory and confirmatory runs, plus the analyzer output. |
 | `fan-write-test.sh` | One-shot experiment: raises record 1's primary min duty from 50 % to 70 % for 30 s, then restores it. It restores on any exit or signal, and stops for manual recovery if the byte holds an unexpected value. |
 
 ## Build and use

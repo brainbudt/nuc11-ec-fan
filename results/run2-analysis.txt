@@ -1,0 +1,23 @@
+step value  base_rpm  raw_delta  matched_delta  matched_n
+   1  50%     3150         -1             -1         16
+   2  60%     3149        455            457         11
+   3  40%     3149       -183           -183         20
+   4  80%     3149       1240           1240         20
+   5  50%     3150        -50            -52         20
+   6  70%     3136        813            817         20
+   7  45%     3114       -147           -145         20
+   8  45%     3144       -182           -181         20
+   9  70%     3146        850            851         12
+  10  50%     3098          7              7         20
+  11  80%     3146       1214           1214         16
+  12  40%     3128       -163           -150         20
+  13  60%     3090        458            458         20
+  14  50%     3090         -3             -4         20
+end rpm = 3120
+PASS  C7 completeness
+PASS  C4 temperature overlap (>=3 matched hold samples)
+PASS  C1 sham |md|<80
+PASS  C2 direction and |md|>=120
+FAIL  C3 monotonic per sweep
+PASS  C5 replication
+PASS  C6 bytes and restore
