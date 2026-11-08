@@ -19,7 +19,6 @@ log()  {
 restored=0
 restore() {
   [ "$restored" = 1 ] && return 0
-  restored=1
   local cur; cur=$(byte)
   case "$cur" in
     0x46) "$ECMEM" write $OFF $NEW $OLD ;;  # result checked by readback below
@@ -27,7 +26,7 @@ restore() {
     *)    echo "MANUAL RECOVERY NEEDED: byte is '$cur' (expected 0x46 or 0x32); reboot restores BIOS profile"; return 1 ;;
   esac
   cur=$(byte)
-  [ "$cur" = 0x32 ] && { echo "restore verified"; return 0; }
+  [ "$cur" = 0x32 ] && { restored=1; echo "restore verified"; return 0; }
   echo "MANUAL RECOVERY NEEDED: byte is '$cur' after restore"; return 1
 }
 cleanup() { trap '' HUP INT TERM; restore || exit 2; }
