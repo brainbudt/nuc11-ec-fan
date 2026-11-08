@@ -2,7 +2,7 @@
 
 Experimental fan control for the **Intel NUC 11 Pro (NUC11TNH / Tiger Canyon)** on Linux. It reads and writes the embedded controller's (EC's) shared memory.
 
-> **Status: research.** Reading works. Whether the EC applies a changed fan profile without Intel's Windows driver has **not been confirmed yet**. Do not use the write path unless you understand the risks below.
+> **Status: research.** Reading works. One write experiment succeeded: the EC applied a changed fan-record field without Intel's Windows driver (see [Results](#results)). Only that single field has been tested, on one machine. Do not use the write path unless you understand the risks below.
 
 ## Background
 
@@ -26,7 +26,25 @@ Fan record layout. It follows the analysis of NUC Software Studio for the NUC11P
 | 12 | config1 (bit 7 set = fixed/custom mode on ECNUC22) |
 | 13 | config2 (bit 7 = zero-RPM / fan-off enabled on ECNUC22) |
 
-Intel's driver writes profiles through a kernel IOCTL. Whether it does more than copy bytes into this window (for example, notify the EC) is unknown. Finding that out is the purpose of `fan-write-test.sh`.
+Intel's driver writes profiles through a kernel IOCTL. It is unknown whether the driver does more than copy bytes into this window. The experiment below shows that, for at least one field, copying the byte is enough.
+
+## Results
+
+One run of `fan-write-test.sh` on a NUC11TNHi7 (BIOS `TNTGL357.0064`, idle, CPU 47–50 °C):
+
+| Phase | Record 1 primary min duty | Reported fan speed |
+| --- | --- | --- |
+| Baseline | 50 % (`0x32`) | 3194–3208 RPM |
+| Test, 30 s | 70 % (`0x46`) | rose to ~4000 RPM, visible within one 3 s sample; stayed at 3993–4060 RPM |
+| After restore | 50 % (`0x32`, verified by readback) | declined gradually toward baseline over ~30 s (3297 RPM after 30 s); a later reading gave 3194 RPM |
+
+What this shows:
+
+- On this machine and BIOS, writing record 1's primary min duty into the EC window caused a sustained increase in reported speed. No explicit driver-notify step was needed. CPU temperatures before and during the change overlap, so temperature drift is an unlikely sole explanation. This is a single, unreplicated experiment.
+- The big-endian field at `+0x1D` gave plausible speeds that tracked the change and the restore. This shows live telemetry, not physical calibration.
+- Restoring to `0x32` was verified, and record 1 read back unchanged afterwards. No residual change was seen in the tested record; other or hidden EC state was not checked.
+
+Not tested: other fields and records, and whether a change survives a reboot. The expectation is that the EC reloads the BIOS profile at power-on, but that has not been tested.
 
 ## Files
 
@@ -48,7 +66,7 @@ Requirements: root, x86-64, and `/dev/mem` access to that MMIO range. Kernel loc
 
 ## Risks
 
-- Writing to EC memory is undocumented. A bad value could leave the fan too slow until the next reboot; the EC reloads the BIOS profile at power-on.
+- Writing to EC memory is undocumented. A bad value could leave the fan too slow. Whether a reboot or power cycle restores the BIOS profile is expected but untested.
 - The write test only *raises* the minimum duty, so the fan can only spin faster during the test.
 - Only tested on one NUC11TNHi7. Other models and BIOS versions may use a different layout. `ecmem` refuses to run if the EC ID is not `NUC_EC`.
 
