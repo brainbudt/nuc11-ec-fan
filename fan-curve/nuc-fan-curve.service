@@ -1,0 +1,15 @@
+[Unit]
+Description=Fan curve for the Intel NUC 11 Pro (EC minimum duty from CPU temperature)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/nuc-fan-curve --foreground
+# SIGTERM makes the script restore the original minimum duty before exiting.
+KillMode=mixed
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

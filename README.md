@@ -1,145 +1,188 @@
 # nuc11-ec-fan
 
-Experimental fan control for the **Intel NUC 11 Pro (NUC11TNH / Tiger Canyon)** on Linux. It reads and writes the embedded controller's (EC's) shared memory.
+Fan control for the **Intel NUC 11 Pro (NUC11TN, "Tiger Canyon")** on Linux.
 
-> **Answer: yes.** On a NUC11TNHi7 with BIOS `TNTGL357.0064`, writing fan record 1's primary `min_duty` at EC address `0xFE410400+0x83` from Linux reproducibly raises and lowers the EC-reported fan RPM. This was tested against sham writes and at matched temperature readings, without any explicit driver notification. Strict dose dependence across 40–80 % was not confirmed; the apparent plateau near 2960 RPM is exploratory. See [Controlled sweep](#controlled-sweep). Only this one field has been tested, on one machine.
+On this NUC the fan is not driven by a Super I/O chip that Linux supports (`it87`, `nct6775`, …). It is controlled by the embedded controller (EC), so normally the BIOS fan curve is the only option. This project reads and writes the EC's shared memory to:
 
-## Background
+- read the fan speed;
+- set the fan's minimum duty from Linux, as a CPU-temperature fan curve (systemd or Unraid).
 
-On the NUC 11 the fan is not driven by a Super I/O chip that Linux supports (`it87`, `nct6775`, …). It is controlled by the EC, and the only control on Linux is the fan curve in the BIOS. Intel's Windows tool *NUC Software Studio* could change fan profiles at runtime, but it was discontinued in 2024 and the NUC11TNH was never on its supported list.
+> **Does it work?** Yes, on the tested machine (NUC11TNHi7, BIOS `TNTGL357.0064`). Writing one byte from Linux reproducibly raises and lowers the fan speed. This was confirmed in a pre-registered experiment with sham writes and temperature-matched comparisons, and with an independent cooling effect. See [Evidence](#evidence).
 
-The EC exposes a shared-memory window at physical address `0xFE410400` (0x100 bytes; ACPI region `H2RA` starts at `0xFE410000`). Observed on a NUC11TNHi7 with BIOS `TNTGL357.0064`:
+> [!WARNING]
+> This writes to undocumented EC memory through `/dev/mem`. It is tested on **one** NUC model and BIOS. Use at your own risk. `ecmem` refuses to run unless the EC identifies itself as `NUC_EC`. `ecmem write` can put any value into one byte of fan record 1. The fan-curve script only writes the min-duty byte, clamped to 40–100 %.
+
+## Compatibility
+
+| | |
+| --- | --- |
+| Tested | Intel NUC11TNHi7, BIOS `TNTGL357.0064` (Unraid 7.3, kernel 6.18) |
+| Probably similar | Other NUC11TN models (TNHi3/5/7, TNKi*). Unverified: please [report](#reporting-other-models) |
+| Not supported | NUC 11 Extreme/Enthusiast and other generations (different EC layouts) |
+| Requires | x86-64 Linux, root, `/dev/mem` access to MMIO. Kernel lockdown (often enabled with Secure Boot) blocks this: `/sys/kernel/security/lockdown` must show `[none]` or not exist |
+
+## Quick start
+
+### 1. Get `ecmem`
+
+Download the static binary from the [latest release](../../releases), or build it:
+
+```sh
+gcc -O2 -Wall -Wextra -static -o ecmem ecmem.c
+```
+
+If you build it yourself, its hash differs from the release binary. Before installing the fan curve, set `ECMEM_SHA256` at the top of `fan-curve/nuc-fan-curve.sh` to the output of `sha256sum ecmem` (for both systemd and Unraid).
+
+`ecmem read` dumps the EC window (0x100 bytes). `ecmem write <offset> <old> <new>` writes one byte under three conditions: the offset is inside fan record 1 (`0x80..0x8D`), the EC ID is `NUC_EC`, and the current value equals `<old>`.
+
+### 2. Check your machine (read-only)
+
+```sh
+sudo ./ecmem read | head -2     # first bytes should spell NUC_EC: 4e 55 43 5f 45 43
+sudo ./nuc-fan.sh ./ecmem       # RPM and the decoded fan record
+```
+
+### 3a. Fan curve with systemd
+
+```sh
+sudo install -Dm755 ecmem /usr/local/lib/nuc-ec-fan/ecmem
+sudo install -m755 fan-curve/nuc-fan-curve.sh /usr/local/sbin/nuc-fan-curve
+sudo install -m644 fan-curve/nuc-fan-curve.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now nuc-fan-curve
+```
+
+To change the curve, edit the settings at the top of `/usr/local/sbin/nuc-fan-curve` and run `sudo systemctl restart nuc-fan-curve`. Running `systemctl stop nuc-fan-curve` restores the original value. To see what it is doing:
+
+```sh
+cat /run/nuc-fan-curve.status
+journalctl -t nuc-fan-curve
+```
+
+### 3b. Fan curve on Unraid
+
+This requires the *User Scripts* plugin.
+
+1. Copy `ecmem` to `/boot/config/plugins/nuc-ec-fan/ecmem`.
+2. Create two user scripts with the contents of `fan-curve/nuc-fan-curve.sh` and `fan-curve/nuc-fan-curve-stop.sh`.
+3. Schedule "NUC fan curve" as **At First Array Start Only**, and run it once.
+
+To change the curve, edit the script and click *Run Script*. Stop it with "NUC fan curve stop"; the *Abort* button does not stop the background loop.
+
+### Settings
+
+```sh
+CURVE="50:45 60:50 70:65 80:85 90:100"   # "CPU °C:minimum fan %" pairs, interpolated
+INTERVAL=5                               # seconds between checks
+HYSTERESIS=3                             # °C cooler before the fan is lowered
+ECMEM_SHA256=…                           # hash of your ecmem binary (default = release binary)
+```
+
+How it behaves:
+
+- **It sets a minimum, not a fixed speed.** The value is the *minimum* duty of the EC's own fan curve, so the EC still speeds the fan up when it gets hot. The fan can never run slower than the BIOS curve allows above that minimum.
+- **No lower than about 45 %.** Values are clamped to 40–100 %, and on the tested machine the fan did not get slower below about 45 % (≈ 2960 RPM).
+- **Safety:**
+  - Only one instance can run.
+  - Changes made by others are corrected.
+  - The original value is restored on stop or signal, if the CPU temperature becomes unreadable, or after 3 failed writes.
+
+## How it works
+
+The EC exposes a shared-memory window at physical address `0xFE410400` (0x100 bytes; the ACPI region `H2RA` starts at `0xFE410000`). Observed on the tested machine:
 
 | Offset | Content |
 | --- | --- |
 | `+0x00` | ASCII EC ID `NUC_EC` |
+| `+0x10..0x15` | Temperature pairs (source id, °C), e.g. source 4 at `+0x11` |
 | `+0x1C` | Fan present flag (`01`) |
 | `+0x1D..0x1E` | Fan RPM, big-endian |
 | `+0x80..0xDD` | Fan profile: six 14-byte records, each followed by 2 bytes not part of the record |
 
-Fan record layout. It follows the analysis of NUC Software Studio for the NUC11PH (Phantom Canyon) in [CodeGrogu/intel-nuc-software-studio-decompiled](https://github.com/CodeGrogu/intel-nuc-software-studio-decompiled):
+The fan record layout follows the analysis of Intel *NUC Software Studio* for the NUC11PH in [CodeGrogu/intel-nuc-software-studio-decompiled](https://github.com/CodeGrogu/intel-nuc-software-studio-decompiled):
 
 | Byte | Field |
 | --- | --- |
-| 0–5 | Primary: temperature source, max temp °C, min temp °C, min duty %, duty increment per °C, fan-off temp °C |
+| 0–5 | Primary: temperature source, max temp °C, min temp °C, **min duty %**, duty increment per °C, fan-off temp °C |
 | 6–11 | Secondary: same six fields |
-| 12 | config1 (bit 7 set = fixed/custom mode on ECNUC22) |
-| 13 | config2 (bit 7 = zero-RPM / fan-off enabled on ECNUC22) |
+| 12 | config1 (bit 7: fixed/custom mode on ECNUC22) |
+| 13 | config2 (bit 7: zero-RPM / fan-off on ECNUC22) |
 
-Intel's driver writes profiles through a kernel IOCTL. It is unknown whether the driver does more than copy bytes into this window. The experiment below shows that, for at least one field, copying the byte is enough.
+Only record 1's primary min duty (offset `0x83`) is written. Intel's Windows driver writes whole profiles through a kernel IOCTL. The experiments below show that, for this field, writing the byte into the window is enough: the EC applies it immediately, with no further notification.
 
-## Results
+## Evidence
 
-One run of `fan-write-test.sh` on a NUC11TNHi7 (BIOS `TNTGL357.0064`, idle, CPU 47–50 °C):
+All raw data and scripts are in [`research/`](research/).
 
-| Phase | Record 1 primary min duty | Reported fan speed |
-| --- | --- | --- |
-| Baseline | 50 % (`0x32`) | 3194–3208 RPM |
-| Test, 30 s | 70 % (`0x46`) | rose to ~4000 RPM, visible within one 3 s sample; stayed at 3993–4060 RPM |
-| After restore | 50 % (`0x32`, verified by readback) | declined gradually toward baseline over ~30 s (3297 RPM after 30 s); a later reading gave 3194 RPM |
+**First test** (`research/fan-write-test.sh`): raising min duty from 50 % to 70 % for 30 s moved the fan from about 3200 to about 4000 RPM within one 3-second sample. After the restore, it declined back to about 3200 RPM.
 
-What this shows:
+**Pre-registered controlled sweep** (`research/fan-sweep-test.sh`, `research/analyze-sweep.py`). Script, settings, thresholds and verdict rules were frozen in commit `fb7d3ab` before the confirmatory run.
 
-- On this machine and BIOS, writing record 1's primary min duty into the EC window caused a sustained increase in reported speed. No explicit driver-notify step was needed. CPU temperatures before and during the change overlap, so temperature drift is an unlikely sole explanation. This is a single, unreplicated experiment.
-- The big-endian field at `+0x1D` gave plausible speeds that tracked the change and the restore. This shows live telemetry, not physical calibration.
-- Restoring to `0x32` was verified, and record 1 read back unchanged afterwards. No residual change was seen in the tested record; other or hidden EC state was not checked.
+- **Plan:** 14 steps in two sweeps, the second in reverse order: sham (the original value written over itself), 60, 40, 80, sham, 70, 45 %.
+- **Each step:** ≥ 60 s baseline at 50 %, a 12 s hold, restore, verify.
+- **Sampling:** 4 samples per second, with the byte checked on every sample. Any mismatch, read error or CPU ≥ 65 °C aborts and restores.
+- **Temperature matching:** RPM is compared only between baseline and hold samples with the *same* pair of fan-record temperatures (CPU and EC source 4). A pure temperature effect therefore cannot pass.
 
-Not tested: other fields and records, and whether a change survives a reboot. The expectation is that the EC reloads the BIOS profile at power-on, but that has not been tested.
-
-## Controlled sweep
-
-To rule out chance and confounders, `fan-sweep-test.sh` and `analyze-sweep.py` implement a pre-registered experiment. Script, settings, thresholds and verdict rules were frozen in commit `fb7d3ab` before the confirmatory run.
-
-- **Plan:** 14 steps in two sweeps, the second in reverse order: sham (the original value written over itself), 60, 40, 80, sham, 70, 45 %, then the same in reverse.
-- **Each step:** ≥ 60 s baseline at 50 %, a 12 s hold at the step value, restore, verify.
-- **Sampling:** 4 samples per second. Every sample checks that the byte holds its planned value; any mismatch, read error or CPU ≥ 65 °C aborts and restores.
-- **Temperature-matched delta:** RPM is compared only between baseline and hold samples with the *same* (CPU, EC source-4) temperature pair. These are both temperature sources of fan record 1, so a pure temperature response cannot pass.
-
-| Criterion | Confirmatory run (`results/run2-confirmatory.csv`) |
+| Criterion | Result (`research/results/run2-confirmatory.csv`) |
 | --- | --- |
 | C1 sham steps \|Δ\| < 80 RPM | PASS (−1, −52, +7, −4) |
-| C2 every active step in the right direction, \|Δ\| ≥ 120 RPM | PASS (10/10; −145 … +1240) |
-| C3 strictly monotonic within each sweep | **FAIL** (sweep 2: 40 % = −150, 45 % = −181) |
+| C2 every active step in the right direction, \|Δ\| ≥ 120 RPM | PASS (10/10) |
+| C3 strictly monotonic within each sweep | **FAIL** (40 % ≈ 45 %, see the plateau below) |
 | C4 ≥ 3 temperature-matched hold samples per step | PASS (11–20) |
-| C5 both sweeps agree per value (sign, ratio ≤ 2) | PASS |
+| C5 both sweeps agree per value | PASS |
 | C6 bytes as planned, restored, end RPM near baseline | PASS |
-| C7 complete plan, durations, no failures | PASS |
+| C7 complete plan, no failures | PASS |
 
-Mean temperature-matched change versus the 50 % baseline:
+Temperature-matched change versus the 50 % baseline (RPM):
 
 | min duty | 40 % | 45 % | 60 % | 70 % | 80 % |
 | --- | --- | --- | --- | --- | --- |
 | Sweep 1 | −183 | −145 | +457 | +817 | +1240 |
 | Sweep 2 | −150 | −181 | +458 | +851 | +1214 |
 
-The pre-registered overall verdict therefore fails on C3. The narrower conclusion at the top rests on C1, C2 and C4–C7, none of which were changed after seeing data. That conclusion was independently re-derived from the log by a second reviewer.
+The overall pre-registered verdict fails on C3. The conclusion "the fan speed can be raised and lowered from Linux" rests on C1, C2 and C4–C7, none of which were changed after seeing data.
 
-**Exploratory, not confirmed:** at 40 % and 45 %, the hold RPM sat at 2957–2970 in every such step of both runs. This suggests a low-setting plateau near 2960 EC-reported RPM under these conditions, which would explain the C3 inversion. It does not establish a physical minimum or its mechanism.
+What else was observed:
 
-`results/run1-exploratory.csv` is an earlier run with a 30 s hold. It **failed** its own C4: the faster fan cooled source 4 by 1 °C after 9–22 s, which removed the temperature overlap. That run is kept for transparency and informed the 12 s hold.
+- **Physical effect** (exploratory, earlier run with 30 s holds): CPU temperature fell after all 6 raises (−0.4 to −1.2 °C) and rose after all 4 reductions (+0.2 to +1.0 °C). Sham steps were mixed. The reported RPM corresponds to real airflow.
+- **Plateau** (exploratory): at 40 % and 45 % the fan sat at about 2960 RPM (2953–2970) in every such step of both runs.
+- **The earlier run failed its own temperature-overlap criterion.** It is kept for transparency in `research/results/run1-exploratory.csv`.
 
-**Physical effect (exploratory, from run 1):** the reported RPM corresponds to real airflow. In the late part of each 30 s hold (t ≥ 20 s), mean CPU temperature fell after all 6 raises (−0.42 to −1.24 °C) and rose after all 4 reductions (+0.16 to +0.95 °C). Sham steps were mixed (−0.22 to +0.58 °C). EC source 4 moved the same way with a delay. A second reviewer recomputed these numbers independently.
+Limits:
 
-Limits: one machine and BIOS; EC-reported RPM, not a physical tachometer; integer temperature resolution; samples within a run are not independent replications.
+- one machine and BIOS;
+- RPM as reported by the EC (no external tachometer);
+- integer temperature resolution;
+- only this one field tested;
+- reboot behaviour untested (the EC is expected to reload the BIOS profile at power-on).
 
 ## Files
 
-| File | Purpose |
+| Path | Purpose |
 | --- | --- |
-| `ecmem.c` | Small static tool. `ecmem read` dumps the window via uncached `mmap` of `/dev/mem`. `ecmem write <off> <old> <new>` writes one byte, but only within fan record 1 (`0x80..0x8D`), only if the EC ID is `NUC_EC`, and only if the current value equals `<old>`. |
-| `nuc-fan.sh` | Prints RPM and decodes fan record 1 (read-only). |
-| `fan-sweep-test.sh` | Pre-registered controlled sweep (sham steps, five settings, two sweeps in opposite order); CSV output. |
-| `analyze-sweep.py` | Evaluates a sweep log against fixed criteria C1–C7 (temperature-matched). |
-| `results/` | Raw logs of the exploratory and confirmatory runs, plus the analyzer output. |
-| `unraid/` | Unraid User Scripts: CPU-temperature fan curve and its stop script. |
-| `fan-write-test.sh` | One-shot experiment: raises record 1's primary min duty from 50 % to 70 % for 30 s, then restores it. It restores on any exit or signal, and stops for manual recovery if the byte holds an unexpected value. |
+| `ecmem.c` | EC window reader and guarded single-byte writer |
+| `nuc-fan.sh` | Read-only status: RPM and the decoded fan record 1 |
+| `fan-curve/nuc-fan-curve.sh` | CPU-temperature fan curve (systemd `--foreground`, or Unraid background mode) |
+| `fan-curve/nuc-fan-curve.service` | systemd unit |
+| `fan-curve/nuc-fan-curve-stop.sh` | Unraid stop helper |
+| `research/` | One-shot test, controlled sweep, analyzer and raw results |
 
-## Unraid: fan curve as a User Script
+## Reporting other models
 
-`unraid/nuc-fan-curve.sh` runs a CPU-temperature fan curve, using `ecmem` to set the minimum duty (offset `0x83`). It requires the *User Scripts* plugin.
+If you have another NUC 11 Pro, read-only output helps a lot. Open an issue with:
 
-1. Copy the static `ecmem` binary to `/boot/config/plugins/nuc-ec-fan/ecmem`. The script checks its SHA-256 (the value is in the script).
-2. Create two User Scripts with the contents of `unraid/nuc-fan-curve.sh` and `unraid/nuc-fan-curve-stop.sh`.
-3. Schedule "NUC fan curve" as **At First Array Start Only**, and run it once.
+- `sudo dmidecode -s baseboard-product-name` and `sudo dmidecode -s bios-version`
+- the first two lines of `sudo ./ecmem read`, and the output of `sudo ./nuc-fan.sh ./ecmem`
 
-Settings at the top of the script:
-
-```sh
-CURVE="50:45 60:50 70:65 80:85 90:100"   # CPU-temp-C:minimum-fan-% pairs, interpolated
-INTERVAL=5                               # seconds between checks
-HYSTERESIS=3                             # C cooler before the fan is lowered
-```
-
-After editing, click *Run Script* again: it stops the running curve (restoring the original value) and starts a new one. Stop it with "NUC fan curve stop"; the *Abort* button does not stop the detached loop.
-
-Status is in `/tmp/nuc-fan-curve.status`, and changes go to syslog (tag `nuc-fan-curve`).
-
-How it behaves:
-
-- **Safety:** writes are clamped to 40–100 %. Only one loop can run (lock). Changes made by others are corrected. On stop or signal, an unreadable temperature, or 3 failed writes, the original value is restored.
-- **It sets a minimum, not a fixed speed:** the EC still raises the fan with temperature on its own.
-- **No lower than about 45 %:** below that the fan does not get slower (about 2960 RPM).
-
-## Build and use
-
-```sh
-gcc -O2 -Wall -Wextra -static -o ecmem ecmem.c
-sudo ./ecmem read
-sudo ./nuc-fan.sh ./ecmem
-```
-
-Requirements: root, x86-64, and `/dev/mem` access to that MMIO range. Kernel lockdown (for example with Secure Boot) blocks it; check that `/sys/kernel/security/lockdown` is `[none]` or missing.
-
-## Risks
-
-- Writing to EC memory is undocumented. A bad value could leave the fan too slow. Whether a reboot or power cycle restores the BIOS profile is expected but untested.
-- The write test only *raises* the minimum duty, so the fan can only spin faster during the test.
-- Only tested on one NUC11TNHi7. Other models and BIOS versions may use a different layout. `ecmem` refuses to run if the EC ID is not `NUC_EC`.
+Please do not try writes on untested models without reading the code first.
 
 ## Credits
 
-The record layout and IOCTL background come from [CodeGrogu/intel-nuc-software-studio-decompiled](https://github.com/CodeGrogu/intel-nuc-software-studio-decompiled). The idea of reading fan RPM from the EC window comes from [mikns/nuc-fan-rpm](https://github.com/mikns/nuc-fan-rpm) (NUC10).
+- The fan record layout and driver background come from [CodeGrogu/intel-nuc-software-studio-decompiled](https://github.com/CodeGrogu/intel-nuc-software-studio-decompiled).
+- The idea of reading fan RPM from the EC window comes from [mikns/nuc-fan-rpm](https://github.com/mikns/nuc-fan-rpm) (NUC10).
+
+This project is not affiliated with Intel or ASUS.
 
 ## License
 
-Not yet chosen.
+[MIT](LICENSE)

@@ -14,6 +14,11 @@ INTERVAL=5
 # The fan is only lowered once the CPU is this many degrees C cooler than the
 # temperature that would justify the current speed (prevents flapping).
 HYSTERESIS=3
+
+# SHA-256 of the installed ecmem binary (checked before every start). The
+# default matches the prebuilt release binary. If you build ecmem yourself,
+# put your own value here: sha256sum ecmem
+ECMEM_SHA256=eefd621944a30cf73d03f914b6a0d37b694498742bb309f37966edc474cecfbd
 # ========================================================
 #
 # Notes
@@ -23,22 +28,28 @@ HYSTERESIS=3
 # - Values are clamped to 40..100 %. Below about 45 % the fan did not get any
 #   slower in tests (about 2960 RPM). 40-80 % was tested; above 80 % only
 #   makes the fan faster.
-# - Stop it with the "NUC fan curve stop" script; that restores the value that
-#   was active before the first start since boot. The User Scripts "Abort"
-#   button does NOT stop the curve (it runs detached in the background).
-# - Status: /tmp/nuc-fan-curve.status   Log: syslog tag "nuc-fan-curve".
+# - Unraid (User Scripts): run without arguments; it detaches into the
+#   background. Stop it with the "NUC fan curve stop" script, which restores the
+#   value that was active before the first start since boot. The "Abort" button
+#   does NOT stop the curve.
+# - Other Linux: run with --foreground under systemd (see nuc-fan-curve.service);
+#   "systemctl stop" restores the original value.
+# - Status: /run/nuc-fan-curve.status   Log: syslog/journal tag "nuc-fan-curve".
 
 set -u -o pipefail
-# Paths (overridable only for hardware-free testing)
-DIR=${NFC_DIR:-/boot/config/plugins/nuc-ec-fan}
+# Where the ecmem binary is kept: the flash drive on Unraid, else /usr/local/lib.
+if [ -d /boot/config/plugins ]; then DEFAULT_DIR=/boot/config/plugins/nuc-ec-fan
+else DEFAULT_DIR=/usr/local/lib/nuc-ec-fan; fi
+# Paths (NFC_* overrides exist only for hardware-free testing)
+DIR=${NFC_DIR:-$DEFAULT_DIR}
 ECMEM=${NFC_ECMEM:-/usr/local/sbin/nuc-ecmem}
-ECMEM_SHA=${NFC_ECMEM_SHA:-eefd621944a30cf73d03f914b6a0d37b694498742bb309f37966edc474cecfbd}
-PIDFILE=${NFC_PIDFILE:-/var/run/nuc-fan-curve.pid}
-ORIGFILE=${NFC_ORIGFILE:-/tmp/nuc-fan-curve.orig}
-STATUS=${NFC_STATUS:-/tmp/nuc-fan-curve.status}
+ECMEM_SHA=${NFC_ECMEM_SHA:-$ECMEM_SHA256}
+PIDFILE=${NFC_PIDFILE:-/run/nuc-fan-curve.pid}
+ORIGFILE=${NFC_ORIGFILE:-/run/nuc-fan-curve.orig}   # /run is emptied at boot
+STATUS=${NFC_STATUS:-/run/nuc-fan-curve.status}
 CPU_TEMP_FILE=${NFC_CPU_TEMP_FILE:-}
-STARTLOCK=${NFC_STARTLOCK:-/var/run/nuc-fan-curve.start.lock}
-LOOPLOCK=${NFC_LOOPLOCK:-/var/run/nuc-fan-curve.loop.lock}
+STARTLOCK=${NFC_STARTLOCK:-/run/nuc-fan-curve.start.lock}
+LOOPLOCK=${NFC_LOOPLOCK:-/run/nuc-fan-curve.loop.lock}
 OFF=0x83 DUTY_MIN=40 DUTY_MAX=100
 
 log() { logger -t nuc-fan-curve -- "$*"; echo "$*"; }
@@ -98,6 +109,7 @@ validate_settings() {
   local p t d prev_t=-1 prev_d=-1 n=0
   [[ $INTERVAL =~ ^[0-9]+$ ]] && (( INTERVAL >= 1 && INTERVAL <= 60 )) || die "INTERVAL must be 1..60"
   [[ $HYSTERESIS =~ ^[0-9]+$ ]] && (( HYSTERESIS <= 15 )) || die "HYSTERESIS must be 0..15"
+  [[ $ECMEM_SHA =~ ^[0-9a-f]{64}$ ]] || die "ECMEM_SHA256 must be a 64-character sha256"
   for p in $CURVE; do
     [[ $p =~ ^[0-9]+:[0-9]+$ ]] || die "CURVE entry '$p' is not TEMP:PERCENT"
     t=${p%%:*}; d=${p##*:}
@@ -160,7 +172,8 @@ loop() {
 [ "${1:-}" = __nuc_fan_curve_loop ] && { loop; exit; }
 
 # ---- start ----
-[ "$(id -u)" = 0 ] || [ -n "${NFC_DIR:-}" ] || die "must run as root"
+case "${1:-}" in ""|--foreground) ;; *) die "usage: $0 [--foreground]";; esac
+[ "$(id -u)" = 0 ] || [ "${NFC_TEST:-}" = 1 ] || die "must run as root"
 validate_settings
 [ -f "$DIR/ecmem" ] || die "$DIR/ecmem not found"
 echo "$ECMEM_SHA  $DIR/ecmem" | sha256sum -c --status || die "$DIR/ecmem has an unexpected checksum"
@@ -175,6 +188,11 @@ if [ ! -s "$ORIGFILE" ]; then
   echo "$DUTY" > "$ORIGFILE"
 fi
 rm -f "$PIDFILE"
+if [ "${1:-}" = --foreground ]; then
+  # For systemd: become the loop in place (same pid), without the start lock.
+  exec 9>&-
+  exec bash "$(readlink -f "$0")" __nuc_fan_curve_loop
+fi
 # Detach with setsid -f and reset INT/HUP to default: a starter that runs in the
 # background has them ignored, and bash cannot trap signals ignored at entry.
 # The loop writes its own pid file while holding the loop lock.
