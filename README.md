@@ -91,7 +91,34 @@ Limits: one machine and BIOS; EC-reported RPM, not a physical tachometer; intege
 | `fan-sweep-test.sh` | Pre-registered controlled sweep (sham steps, five settings, two sweeps in opposite order); CSV output. |
 | `analyze-sweep.py` | Evaluates a sweep log against fixed criteria C1–C7 (temperature-matched). |
 | `results/` | Raw logs of the exploratory and confirmatory runs, plus the analyzer output. |
+| `unraid/` | Unraid User Scripts: CPU-temperature fan curve and its stop script. |
 | `fan-write-test.sh` | One-shot experiment: raises record 1's primary min duty from 50 % to 70 % for 30 s, then restores it. It restores on any exit or signal, and stops for manual recovery if the byte holds an unexpected value. |
+
+## Unraid: fan curve as a User Script
+
+`unraid/nuc-fan-curve.sh` runs a CPU-temperature fan curve, using `ecmem` to set the minimum duty (offset `0x83`). It requires the *User Scripts* plugin.
+
+1. Copy the static `ecmem` binary to `/boot/config/plugins/nuc-ec-fan/ecmem`. The script checks its SHA-256 (the value is in the script).
+2. Create two User Scripts with the contents of `unraid/nuc-fan-curve.sh` and `unraid/nuc-fan-curve-stop.sh`.
+3. Schedule "NUC fan curve" as **At First Array Start Only**, and run it once.
+
+Settings at the top of the script:
+
+```sh
+CURVE="50:45 60:50 70:65 80:85 90:100"   # CPU-temp-C:minimum-fan-% pairs, interpolated
+INTERVAL=5                               # seconds between checks
+HYSTERESIS=3                             # C cooler before the fan is lowered
+```
+
+After editing, click *Run Script* again: it stops the running curve (restoring the original value) and starts a new one. Stop it with "NUC fan curve stop"; the *Abort* button does not stop the detached loop.
+
+Status is in `/tmp/nuc-fan-curve.status`, and changes go to syslog (tag `nuc-fan-curve`).
+
+How it behaves:
+
+- **Safety:** writes are clamped to 40–100 %. Only one loop can run (lock). Changes made by others are corrected. On stop or signal, an unreadable temperature, or 3 failed writes, the original value is restored.
+- **It sets a minimum, not a fixed speed:** the EC still raises the fan with temperature on its own.
+- **No lower than about 45 %:** below that the fan does not get slower (about 2960 RPM).
 
 ## Build and use
 
