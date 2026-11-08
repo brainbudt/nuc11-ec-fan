@@ -76,7 +76,9 @@ The pre-registered overall verdict therefore fails on C3. The narrower conclusio
 
 **Exploratory, not confirmed:** at 40 % and 45 %, the hold RPM sat at 2957–2970 in every such step of both runs. This suggests a low-setting plateau near 2960 EC-reported RPM under these conditions, which would explain the C3 inversion. It does not establish a physical minimum or its mechanism.
 
-`results/run1-exploratory.csv` is an earlier run with a 30 s hold. It **failed** its own C4: the faster fan cooled source 4 by 1 °C after 9–18 s, which removed the temperature overlap. That run is kept for transparency and informed the 12 s hold.
+`results/run1-exploratory.csv` is an earlier run with a 30 s hold. It **failed** its own C4: the faster fan cooled source 4 by 1 °C after 9–22 s, which removed the temperature overlap. That run is kept for transparency and informed the 12 s hold.
+
+**Physical effect (exploratory, from run 1):** the reported RPM corresponds to real airflow. In the late part of each 30 s hold (t ≥ 20 s), mean CPU temperature fell after all 6 raises (−0.42 to −1.24 °C) and rose after all 4 reductions (+0.16 to +0.95 °C). Sham steps were mixed (−0.22 to +0.58 °C). EC source 4 moved the same way with a delay. A second reviewer recomputed these numbers independently.
 
 Limits: one machine and BIOS; EC-reported RPM, not a physical tachometer; integer temperature resolution; samples within a run are not independent replications.
 
