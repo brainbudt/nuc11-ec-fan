@@ -1,16 +1,40 @@
+<div align="center">
+
 # nuc11-ec-fan
 
-Fan control for the **Intel NUC 11 Pro (NUC11TN, "Tiger Canyon")** on Linux.
+**Linux fan control for the Intel NUC 11 Pro (NUC11TN, "Tiger Canyon")**
 
-On this NUC the fan is not driven by a Super I/O chip that Linux supports (`it87`, `nct6775`, …). It is controlled by the embedded controller (EC), so normally the BIOS fan curve is the only option. This project reads and writes the EC's shared memory to:
+Read the fan speed and run a CPU-temperature fan curve: no BIOS trip, no Windows, no kernel module.
 
-- read the fan speed;
-- set the fan's minimum duty from Linux, as a CPU-temperature fan curve (systemd or Unraid).
+[![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/brainbudt/nuc11-ec-fan?color=2a78d6)](../../releases/latest)
+![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20systemd%20%C2%B7%20Unraid-52514e)
+![Tested on](https://img.shields.io/badge/tested%20on-NUC11TNHi7-52514e)
 
-> **Does it work?** Yes, on the tested machine (NUC11TNHi7, BIOS `TNTGL357.0064`). Writing one byte from Linux reproducibly raises and lowers the fan speed. This was confirmed in a pre-registered experiment with sham writes and temperature-matched comparisons, and with an independent cooling effect. See [Evidence](#evidence).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/dose-response-dark.svg">
+  <img src="docs/img/dose-response-light.svg" alt="Fan speed rises from about 2,960 RPM at 40–45 % minimum duty to about 4,380 RPM at 80 %; 50 % (the BIOS default) gives about 3,110 RPM." width="760">
+</picture>
+
+</div>
+
+## Why
+
+On the NUC 11 Pro the fan is not driven by a Super I/O chip that Linux supports (`it87`, `nct6775`, …). The embedded controller (EC) runs it, so the BIOS fan curve is normally the only knob, and Intel's Windows tool for it was discontinued in 2024.
+
+This project talks to the EC's shared memory directly:
+
+- 📈 **Read** the fan speed, the EC's temperatures and the active fan profile.
+- 🌡️ **Control** the fan with your own CPU-temperature curve, as a systemd service or an Unraid User Script.
+- 🛡️ **Stay safe:** one byte is written, the fan curve is clamped to 40–100 %, and the original value is restored when the curve stops.
+
+> [!NOTE]
+> **Does it work?** Yes, on the tested machine (NUC11TNHi7, BIOS `TNTGL357.0064`). Writing one byte from Linux reproducibly raises and lowers the fan speed. This was confirmed in a pre-registered experiment with sham writes and temperature-matched comparisons, and backed by an independent cooling effect. See [Evidence](#evidence).
 
 > [!WARNING]
 > This writes to undocumented EC memory through `/dev/mem`. It is tested on **one** NUC model and BIOS. Use at your own risk. `ecmem` refuses to run unless the EC identifies itself as `NUC_EC`. `ecmem write` can put any value into one byte of fan record 1. The fan-curve script only writes the min-duty byte, clamped to 40–100 %.
+
+**Contents:** [Compatibility](#compatibility) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Evidence](#evidence) · [Files](#files) · [Reporting other models](#reporting-other-models)
 
 ## Compatibility
 
@@ -108,15 +132,23 @@ The fan record layout follows the analysis of Intel *NUC Software Studio* for th
 | 12 | config1 (bit 7: fixed/custom mode on ECNUC22) |
 | 13 | config2 (bit 7: zero-RPM / fan-off on ECNUC22) |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/time-course-dark.svg">
+  <img src="docs/img/time-course-light.svg" alt="After writing 80 % the fan rises from about 3,150 to 4,380 RPM within 2 seconds; after writing 40 % it falls to about 2,960 RPM within about 7 seconds; a sham write causes no change." width="760">
+</picture>
+
 Only record 1's primary min duty (offset `0x83`) is written. Intel's Windows driver writes whole profiles through a kernel IOCTL. The experiments below show that, for this field, writing the byte into the window is enough: the EC applies it immediately, with no further notification.
 
 ## Evidence
 
-All raw data and scripts are in [`research/`](research/).
+All raw data, scripts and the chart generator (`research/make_charts.py`) are in [`research/`](research/).
 
 **First test** (`research/fan-write-test.sh`): raising min duty from 50 % to 70 % for 30 s moved the fan from about 3200 to about 4000 RPM within one 3-second sample. After the restore, it declined back to about 3200 RPM.
 
-**Pre-registered controlled sweep** (`research/fan-sweep-test.sh`, `research/analyze-sweep.py`). Script, settings, thresholds and verdict rules were frozen in commit `fb7d3ab` before the confirmatory run.
+<details>
+<summary><b>Pre-registered controlled sweep</b>: design, criteria and results</summary>
+
+Scripts: `research/fan-sweep-test.sh` and `research/analyze-sweep.py`. Script, settings, thresholds and verdict rules were frozen in commit `fb7d3ab` before the confirmatory run.
 
 - **Plan:** 14 steps in two sweeps, the second in reverse order: sham (the original value written over itself), 60, 40, 80, sham, 70, 45 %.
 - **Each step:** ≥ 60 s baseline at 50 %, a 12 s hold, restore, verify.
@@ -147,6 +179,8 @@ What else was observed:
 - **Physical effect** (exploratory, earlier run with 30 s holds): CPU temperature fell after all 6 raises (−0.4 to −1.2 °C) and rose after all 4 reductions (+0.2 to +1.0 °C). Sham steps were mixed. The reported RPM corresponds to real airflow.
 - **Plateau** (exploratory): at 40 % and 45 % the fan sat at about 2960 RPM (2953–2970) in every such step of both runs.
 - **The earlier run failed its own temperature-overlap criterion.** It is kept for transparency in `research/results/run1-exploratory.csv`.
+
+</details>
 
 Limits:
 
