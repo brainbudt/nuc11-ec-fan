@@ -28,12 +28,13 @@ ECMEM_SHA256=eefd621944a30cf73d03f914b6a0d37b694498742bb309f37966edc474cecfbd
 # - Values are clamped to 40..100 %. Below about 45 % the fan did not get any
 #   slower in tests (about 2960 RPM). 40-80 % was tested; above 80 % only
 #   makes the fan faster.
-# - Unraid (User Scripts): run without arguments; it detaches into the
-#   background. Stop it with the "NUC fan curve stop" script, which restores the
-#   value that was active before the first start since boot. The "Abort" button
-#   does NOT stop the curve.
-# - Other Linux: run with --foreground under systemd (see nuc-fan-curve.service);
-#   "systemctl stop" restores the original value.
+# - systemd: run with --foreground (see nuc-fan-curve.service); "systemctl stop"
+#   restores the original value.
+# - Any other init system, cron or a shell: run without arguments; it detaches
+#   into the background. Stop it with nuc-fan-curve-stop.sh, which restores the
+#   value that was active before the first start since boot.
+# - Unraid (User Scripts): as above, with the stop script as a second user
+#   script. The "Abort" button does NOT stop the curve.
 # - Status: /run/nuc-fan-curve.status   Log: syslog/journal tag "nuc-fan-curve".
 
 set -u -o pipefail
