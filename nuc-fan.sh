@@ -2,7 +2,7 @@
 # Print NUC EC fan status: RPM and decoded fan record 1. Read-only.
 # Usage: nuc-fan.sh [path-to-ecmem]
 set -euo pipefail
-ECMEM=${1:-/tmp/ecmem}
+ECMEM=${1:-/usr/local/lib/nuc-ec-fan/ecmem}
 
 # 256 bytes -> array of hex strings
 mapfile -t B < <("$ECMEM" read | tr ' ' '\n' | grep -v '^$')

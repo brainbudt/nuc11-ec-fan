@@ -4,11 +4,10 @@
 
 **Linux fan control for the Intel NUC 11 Pro (NUC11TN, "Tiger Canyon")**
 
-Read the fan speed and run a CPU-temperature fan curve: no BIOS trip, no Windows, no kernel module.
+Read the fan speed and run a CPU-temperature fan curve on any Linux distribution: no BIOS trip, no Windows, no kernel module.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-2a78d6)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/brainbudt/nuc11-ec-fan?color=2a78d6)](../../releases/latest)
-![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20systemd%20%C2%B7%20Unraid-52514e)
+![Platform](https://img.shields.io/badge/platform-Linux%20x86--64-52514e)
 ![Tested on](https://img.shields.io/badge/tested%20on-NUC11TNHi7-52514e)
 
 <picture>
@@ -25,14 +24,12 @@ On the NUC 11 Pro the fan is not driven by a Super I/O chip that Linux supports 
 This project talks to the EC's shared memory directly:
 
 - 📈 **Read** the fan speed, the EC's temperatures and the active fan profile.
-- 🌡️ **Control** the fan with your own CPU-temperature curve, as a systemd service or an Unraid User Script.
+- 🌡️ **Control** the fan with your own CPU-temperature curve: a plain bash script that runs as a systemd service or under any other init system.
 - 🛡️ **Stay safe:** one byte is written, the fan curve is clamped to 40–100 %, and the original value is restored when the curve stops.
 
-> [!NOTE]
-> **Does it work?** Yes, on the tested machine (NUC11TNHi7, BIOS `TNTGL357.0064`). Writing one byte from Linux reproducibly raises and lowers the fan speed. This was confirmed in a pre-registered experiment with sham writes and temperature-matched comparisons, and backed by an independent cooling effect. See [Evidence](#evidence).
+> ℹ️ **Does it work?** Yes, on the tested machine (NUC11TNHi7, BIOS `TNTGL357.0064`). Writing one byte from Linux reproducibly raises and lowers the fan speed. This was confirmed in a pre-registered experiment with sham writes and temperature-matched comparisons, and backed by an independent cooling effect. See [Evidence](#evidence).
 
-> [!WARNING]
-> This writes to undocumented EC memory through `/dev/mem`. It is tested on **one** NUC model and BIOS. Use at your own risk. `ecmem` refuses to run unless the EC identifies itself as `NUC_EC`. `ecmem write` can put any value into one byte of fan record 1. The fan-curve script only writes the min-duty byte, clamped to 40–100 %.
+> ⚠️ **Warning:** this writes to undocumented EC memory through `/dev/mem`. It is tested on **one** NUC model and BIOS. Use at your own risk. `ecmem` refuses to run unless the EC identifies itself as `NUC_EC`. `ecmem write` can put any value into one byte of fan record 1. The fan-curve script only writes the min-duty byte, clamped to 40–100 %.
 
 **Contents:** [Compatibility](#compatibility) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Evidence](#evidence) · [Files](#files) · [Reporting other models](#reporting-other-models)
 
@@ -40,22 +37,22 @@ This project talks to the EC's shared memory directly:
 
 | | |
 | --- | --- |
-| Tested | Intel NUC11TNHi7, BIOS `TNTGL357.0064` (Unraid 7.3, kernel 6.18) |
+| Tested | Intel NUC11TNHi7, BIOS `TNTGL357.0064` (kernel 6.18; Unraid 7.3) |
 | Probably similar | Other NUC11TN models (TNHi3/5/7, TNKi*). Unverified: please [report](#reporting-other-models) |
 | Not supported | NUC 11 Extreme/Enthusiast and other generations (different EC layouts) |
-| Requires | x86-64 Linux, root, `/dev/mem` access to MMIO. Kernel lockdown (often enabled with Secure Boot) blocks this: `/sys/kernel/security/lockdown` must show `[none]` or not exist |
+| Requires | Any x86-64 Linux distribution, root, `bash`, coreutils, `flock`, `setsid`, `logger`, and `/dev/mem` access to MMIO. Kernel lockdown (often enabled with Secure Boot) blocks this: `/sys/kernel/security/lockdown` must show `[none]` or not exist. The CPU temperature is read from the `coretemp` hwmon driver |
 
 ## Quick start
 
 ### 1. Get `ecmem`
 
-Download the static binary from the [latest release](../../releases), or build it:
+Download the static binary from the [releases page](https://github.com/brainbudt/nuc11-ec-fan/releases), or build it with any C compiler:
 
 ```sh
 gcc -O2 -Wall -Wextra -static -o ecmem ecmem.c
 ```
 
-If you build it yourself, its hash differs from the release binary. Before installing the fan curve, set `ECMEM_SHA256` at the top of `fan-curve/nuc-fan-curve.sh` to the output of `sha256sum ecmem` (for both systemd and Unraid).
+If you build it yourself, its hash differs from the release binary. Before installing the fan curve, set `ECMEM_SHA256` at the top of `fan-curve/nuc-fan-curve.sh` to the output of `sha256sum ecmem`.
 
 `ecmem read` dumps the EC window (0x100 bytes). `ecmem write <offset> <old> <new>` writes one byte under three conditions: the offset is inside fan record 1 (`0x80..0x8D`), the EC ID is `NUC_EC`, and the current value equals `<old>`.
 
@@ -66,32 +63,56 @@ sudo ./ecmem read | head -2     # first bytes should spell NUC_EC: 4e 55 43 5f 4
 sudo ./nuc-fan.sh ./ecmem       # RPM and the decoded fan record
 ```
 
-### 3a. Fan curve with systemd
+### 3. Install the fan curve
 
 ```sh
 sudo install -Dm755 ecmem /usr/local/lib/nuc-ec-fan/ecmem
 sudo install -m755 fan-curve/nuc-fan-curve.sh /usr/local/sbin/nuc-fan-curve
+```
+
+The script works the same on every distribution. It only needs a way to be started at boot.
+
+#### With systemd (most distributions)
+
+```sh
 sudo install -m644 fan-curve/nuc-fan-curve.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now nuc-fan-curve
 ```
 
-To change the curve, edit the settings at the top of `/usr/local/sbin/nuc-fan-curve` and run `sudo systemctl restart nuc-fan-curve`. Running `systemctl stop nuc-fan-curve` restores the original value. To see what it is doing:
+To change the curve, edit the settings at the top of `/usr/local/sbin/nuc-fan-curve` and run `sudo systemctl restart nuc-fan-curve`. Running `systemctl stop nuc-fan-curve` restores the original value.
+
+#### Without systemd (OpenRC, runit, cron, rc.local, …)
+
+Run the script without arguments: it checks everything, starts the loop in the background and returns.
 
 ```sh
-cat /run/nuc-fan-curve.status
-journalctl -t nuc-fan-curve
+sudo nuc-fan-curve                                   # start (or restart after changing settings)
+sudo install -m755 fan-curve/nuc-fan-curve-stop.sh /usr/local/sbin/nuc-fan-curve-stop
+sudo nuc-fan-curve-stop                              # stop and restore the original value
 ```
 
-### 3b. Fan curve on Unraid
+To start it at boot, call `/usr/local/sbin/nuc-fan-curve` from your init system or an `@reboot` cron entry. A service manager that supervises the process itself can run `nuc-fan-curve --foreground` instead and send `SIGTERM` to stop it.
 
-This requires the *User Scripts* plugin.
+<details>
+<summary><b>Example: Unraid</b> (User Scripts plugin)</summary>
+
+Unraid keeps no files outside the flash drive across reboots, so the script looks for `ecmem` in `/boot/config/plugins/nuc-ec-fan/` when that directory tree exists.
 
 1. Copy `ecmem` to `/boot/config/plugins/nuc-ec-fan/ecmem`.
 2. Create two user scripts with the contents of `fan-curve/nuc-fan-curve.sh` and `fan-curve/nuc-fan-curve-stop.sh`.
 3. Schedule "NUC fan curve" as **At First Array Start Only**, and run it once.
 
 To change the curve, edit the script and click *Run Script*. Stop it with "NUC fan curve stop"; the *Abort* button does not stop the background loop.
+
+</details>
+
+#### Status and logs
+
+```sh
+cat /run/nuc-fan-curve.status
+journalctl -t nuc-fan-curve      # or: grep nuc-fan-curve /var/log/syslog (or /var/log/messages)
+```
 
 ### Settings
 
@@ -196,9 +217,9 @@ Limits:
 | --- | --- |
 | `ecmem.c` | EC window reader and guarded single-byte writer |
 | `nuc-fan.sh` | Read-only status: RPM and the decoded fan record 1 |
-| `fan-curve/nuc-fan-curve.sh` | CPU-temperature fan curve (systemd `--foreground`, or Unraid background mode) |
+| `fan-curve/nuc-fan-curve.sh` | CPU-temperature fan curve (`--foreground` for systemd, or detached background mode) |
 | `fan-curve/nuc-fan-curve.service` | systemd unit |
-| `fan-curve/nuc-fan-curve-stop.sh` | Unraid stop helper |
+| `fan-curve/nuc-fan-curve-stop.sh` | Stops the background mode and restores the original value |
 | `research/` | One-shot test, controlled sweep, analyzer and raw results |
 
 ## Reporting other models
