@@ -15,6 +15,9 @@ else
   echo "fan curve is not running"
 fi
 for f in /var/log/syslog /var/log/messages; do
-  [ -r "$f" ] && { grep nuc-fan-curve "$f" | tail -3; exit 0; }
+  if [ -r "$f" ] && (set -o pipefail; grep nuc-fan-curve "$f" | tail -3); then
+    exit 0
+  fi
 done
-journalctl -t nuc-fan-curve -n 3 --no-pager 2>/dev/null
+# Log availability does not affect whether the fan curve stopped.
+journalctl -t nuc-fan-curve -n 3 --no-pager 2>/dev/null || true

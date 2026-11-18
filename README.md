@@ -97,7 +97,7 @@ To start it at boot, call `/usr/local/sbin/nuc-fan-curve` from your init system 
 <details>
 <summary><b>Example: Unraid</b> (User Scripts plugin)</summary>
 
-Unraid keeps no files outside the flash drive across reboots, so the script looks for `ecmem` in `/boot/config/plugins/nuc-ec-fan/` when that directory tree exists.
+Unraid keeps no files outside the flash drive across reboots, so the script uses `/boot/config/plugins/nuc-ec-fan/ecmem` if that file exists.
 
 1. Copy `ecmem` to `/boot/config/plugins/nuc-ec-fan/ecmem`.
 2. Create two user scripts with the contents of `fan-curve/nuc-fan-curve.sh` and `fan-curve/nuc-fan-curve-stop.sh`.

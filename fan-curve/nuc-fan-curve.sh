@@ -39,7 +39,7 @@ ECMEM_SHA256=eefd621944a30cf73d03f914b6a0d37b694498742bb309f37966edc474cecfbd
 
 set -u -o pipefail
 # Where the ecmem binary is kept: the flash drive on Unraid, else /usr/local/lib.
-if [ -d /boot/config/plugins ]; then DEFAULT_DIR=/boot/config/plugins/nuc-ec-fan
+if [ -f /boot/config/plugins/nuc-ec-fan/ecmem ]; then DEFAULT_DIR=/boot/config/plugins/nuc-ec-fan
 else DEFAULT_DIR=/usr/local/lib/nuc-ec-fan; fi
 # Paths (NFC_* overrides exist only for hardware-free testing)
 DIR=${NFC_DIR:-$DEFAULT_DIR}
